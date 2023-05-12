@@ -7,9 +7,20 @@ import openai
 import pandas as pd
 import tiktoken
 
-from interactions import Extension, slash_command, SlashContext, listen, check, has_role, message_context_menu, \
-    ContextMenuContext, Modal, ParagraphText
-from interactions.api.events import MessageCreate, MemberAdd
+from interactions import (
+    Extension,
+    slash_command,
+    SlashContext,
+    listen,
+    check,
+    has_role,
+    message_context_menu,
+    ContextMenuContext,
+    Modal,
+    ParagraphText,
+    MemberFlags,
+)
+from interactions.api.events import MessageCreate, MemberUpdate
 from interactions.ext.paginators import Paginator
 from scipy import spatial
 
@@ -20,21 +31,21 @@ openai.organization = os.getenv("OPENAI_ORG")
 SETUP_MESSAGE: dict[str, str] = {
     "role": "system",
     "content": "You are Momnisaur, the mother of the Nomnisaurs. You will act like a mother while providing helpful "
-               "and informative replies. Be sure to speak as Momnisaur in first person. Nomnisaurs appear in two "
-               "games, Snack Attack and Dungeons and Dinos. Nomnisaurs love eating everything they can, and "
-               "especially love sweet and spicy flavors. They hate bitter and sour flavors. In Dungeons and Dinos, "
-               "there are 6 Nomnisaurs shown, Nom Chompsky the Wizard, Juicebox the Healer, Meatball the Fighter, "
-               "Gabu the Rogue, Al the Bard, and Dente the Dancer."
+    "and informative replies. Be sure to speak as Momnisaur in first person. Nomnisaurs appear in two "
+    "games, Snack Attack and Dungeons and Dinos. Nomnisaurs love eating everything they can, and "
+    "especially love sweet and spicy flavors. They hate bitter and sour flavors. In Dungeons and Dinos, "
+    "there are 6 Nomnisaurs shown, Nom Chompsky the Wizard, Juicebox the Healer, Meatball the Fighter, "
+    "Gabu the Rogue, Al the Bard, and Dente the Dancer.",
 }
 
 DADDISAUR_MESSAGE: dict[str, str] = {
     "role": "system",
     "content": "You are Daddisaur, the father of the Nomnisaurs. You will act like a father while providing cheesy "
-               "dad jokes. Be sure to speak as Daddisaur in third person. Nomnisaurs appear in two "
-               "games, Snack Attack and Dungeons and Dinos. Nomnisaurs love eating everything they can, and "
-               "especially love sweet and spicy flavors. They hate bitter and sour flavors. In Dungeons and Dinos, "
-               "there are 6 Nomnisaurs shown, Nom Chompsky the Wizard, Juicebox the Healer, Meatball the Fighter, "
-               "Gabu the Rogue, Al the Bard, and Dente the Dancer."
+    "dad jokes. Be sure to speak as Daddisaur in third person. Nomnisaurs appear in two "
+    "games, Snack Attack and Dungeons and Dinos. Nomnisaurs love eating everything they can, and "
+    "especially love sweet and spicy flavors. They hate bitter and sour flavors. In Dungeons and Dinos, "
+    "there are 6 Nomnisaurs shown, Nom Chompsky the Wizard, Juicebox the Healer, Meatball the Fighter, "
+    "Gabu the Rogue, Al the Bard, and Dente the Dancer.",
 }
 
 FUNNY_WORDS: list[str] = [
@@ -78,9 +89,9 @@ FUNNY_WORDS: list[str] = [
     "bees",
 ]
 
-CLEAN_HTML: re.Pattern = re.compile(r'<.*?>')
+CLEAN_HTML: re.Pattern = re.compile(r"<.*?>")
 
-DATA_PATH: str = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+DATA_PATH: str = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "data"))
 print(DATA_PATH)
 
 SAVE_PATHS: dict[str, str] = {
@@ -94,7 +105,7 @@ EMBEDDING_MODEL: str = "text-embedding-ada-002"
 
 SCOPES = [518833007398748161, 1041764477714051103]
 
-CLEAN_NAME: re.Pattern = re.compile(r'[\W_]+')
+CLEAN_NAME: re.Pattern = re.compile(r"[\W_]+")
 
 
 class AI(Extension):
@@ -109,43 +120,52 @@ class AI(Extension):
 
     @staticmethod
     async def strings_ranked_by_relatedness(
-            query: str,
-            df: pd.DataFrame,
-            relatedness_fn=lambda x, y: 1 - spatial.distance.cosine(x, y),
-            top_n: int = 100
+        query: str,
+        df: pd.DataFrame,
+        relatedness_fn=lambda x, y: 1 - spatial.distance.cosine(x, y),
+        top_n: int = 100,
     ) -> tuple[list[str], list[float]]:
         """Returns a list of strings and relatednesses, sorted from most related to least."""
-        query_embedding_response = await openai.Embedding.acreate(model=EMBEDDING_MODEL, input=query, )
+        query_embedding_response = await openai.Embedding.acreate(
+            model=EMBEDDING_MODEL,
+            input=query,
+        )
         query_embedding = query_embedding_response["data"][0]["embedding"]
-        strings_and_relatednesses = [(row["text"], relatedness_fn(query_embedding, row["embedding"])) for i, row in
-                                     df.iterrows()]
+        strings_and_relatednesses = [
+            (row["text"], relatedness_fn(query_embedding, row["embedding"]))
+            for i, row in df.iterrows()
+        ]
         strings_and_relatednesses.sort(key=lambda x: x[1], reverse=True)
         strings, relatednesses = zip(*strings_and_relatednesses)
         return strings[:top_n], relatednesses[:top_n]
 
     @staticmethod
     async def query_message(
-            query: str,
-            df: pd.DataFrame,
-            model: str,
-            token_budget: int,
-            custom_introduction: str = ""
+        query: str,
+        df: pd.DataFrame,
+        model: str,
+        token_budget: int,
+        custom_introduction: str = "",
     ) -> str:
         """Return a message for GPT, with relevant source texts pulled from a dataframe."""
-        strings, relatednesses = await AI.strings_ranked_by_relatedness(query, df, top_n=3)
+        strings, relatednesses = await AI.strings_ranked_by_relatedness(
+            query, df, top_n=3
+        )
         if custom_introduction:
             introduction = custom_introduction
         else:
-            introduction = 'Use the below text about Emberwind to answer the subsequent question. Make sure to also ' \
-                           'give the reasoning behind the answer to the best of your ability. If the answer cannot be' \
-                           ' found in the text, write "I could not find an answer."\n\nEmberwind rules section:\n"""'
+            introduction = (
+                "Use the below text about Emberwind to answer the subsequent question. Make sure to also "
+                "give the reasoning behind the answer to the best of your ability. If the answer cannot be"
+                ' found in the text, write "I could not find an answer."\n\nEmberwind rules section:\n"""'
+            )
         question = f"\n\nQuestion: {query}"
         message = introduction
         for string in strings:
             next_article = "\n" + string + "\n"
             if (
-                    AI.num_tokens(message + next_article + question, model=model)
-                    > token_budget
+                AI.num_tokens(message + next_article + question, model=model)
+                > token_budget
             ):
                 break
             else:
@@ -153,8 +173,28 @@ class AI(Extension):
         return message + '"""\n\n' + question
 
     @listen()
-    async def on_member_add(self, event: MemberAdd):
+    async def on_member_update(self, event: MemberUpdate):
         print("Member Added")
+        if (
+            MemberFlags.COMPLETED_ONBOARDING not in event.before.flags
+            and MemberFlags.COMPLETED_ONBOARDING in event.after.flags
+        ):
+            print("Member Completed Onboarding")
+            response = await openai.ChatCompletion.acreate(
+                model=CHAT_MODEL,
+                messages=[
+                    SETUP_MESSAGE,
+                    {
+                        "role": "user",
+                        "content": f"Welcome {event.after.mention} to the ***EMBERWIND*** discord server!"
+                        f" Make sure to say their name. Mention that you can be pinged for general help in"
+                        f" {self.bot.get_channel(518833007948464130).mention} or for ***EMBERWIND*** rules"
+                        f" questions in {self.bot.get_channel(518833140807237653).mention}.",
+                    },
+                ],
+            )
+            introduction_channel = await self.bot.fetch_channel(518834266109509632)
+            await introduction_channel.send(response.choices[0].message.content)
 
     @listen()
     async def on_message_create(self, event: MessageCreate):
@@ -188,16 +228,22 @@ class AI(Extension):
 
             edit_when_done = await reply_to.reply("Thinking...")
 
-            if is_rules_search or event.message.channel == self.bot.get_channel(518833140807237653):
-                message = await AI.query_message(content, self.bot.rules_df, model=CHAT_MODEL, token_budget=1024)
+            if is_rules_search or event.message.channel == self.bot.get_channel(
+                518833140807237653
+            ):
+                message = await AI.query_message(
+                    content, self.bot.rules_df, model=CHAT_MODEL, token_budget=1024
+                )
                 print(message)
                 rules_messages = [
-                    {"role": "system",
-                     "content": "You are Momnisaur, the mother of the Nomnisaurs. You will act like a "
-                                "mother while providing helpful and informative replies. Be sure to"
-                                " speak as Momnisaur in first person. Speak about Emberwind as if you "
-                                "were part of the team that made the rules."},
-                    {"role": "user", "content": message}
+                    {
+                        "role": "system",
+                        "content": "You are Momnisaur, the mother of the Nomnisaurs. You will act like a "
+                        "mother while providing helpful and informative replies. Be sure to"
+                        " speak as Momnisaur in first person. Speak about Emberwind as if you "
+                        "were part of the team that made the rules.",
+                    },
+                    {"role": "user", "content": message},
                 ]
 
                 response = await openai.ChatCompletion.acreate(
@@ -210,34 +256,46 @@ class AI(Extension):
                 history = []
 
                 channel = event.message.channel
-                channel_history = await channel.history(limit=20, before=event.message.id).fetch()
+                channel_history = await channel.history(
+                    limit=20, before=event.message.id
+                ).fetch()
                 for message in channel_history:
                     if AI.num_tokens("\n".join([x for x in history])) > 500:
                         break
 
-                    text = message.content.replace(self.bot.user.mention, '').replace('rules-search', '').strip()
+                    text = (
+                        message.content.replace(self.bot.user.mention, "")
+                        .replace("rules-search", "")
+                        .strip()
+                    )
                     if not text:
                         continue
 
-                    clean_name = CLEAN_NAME.sub('', message.author.display_name)
-                    history.append(f"{clean_name + ': ' if message.author != self.bot.user else ''}{text}")
+                    clean_name = CLEAN_NAME.sub("", message.author.display_name)
+                    history.append(
+                        f"{clean_name + ': ' if message.author != self.bot.user else ''}{text}"
+                    )
 
                 history.reverse()
-                history_str = '\n'.join(history)
-                clean_name = CLEAN_NAME.sub('', reply_to.author.display_name)
-                full_context = f"Use the following chat history as context when replying to this message from" \
-                               f" {clean_name}.\n\nChat History:\n\"\"\"\n{history_str}\"\"\'\n\nMessage from" \
-                               f" {clean_name}: {content}"
+                history_str = "\n".join(history)
+                clean_name = CLEAN_NAME.sub("", reply_to.author.display_name)
+                full_context = (
+                    f"Use the following chat history as context when replying to this message from"
+                    f' {clean_name}.\n\nChat History:\n"""\n{history_str}""\'\n\nMessage from'
+                    f" {clean_name}: {content}"
+                )
 
-                introduction = 'The below text is are any relevant Emberwind rules if you think the question is ' \
-                               'about Emberwind. If it is not Emberwind related, answer normally.'
+                introduction = (
+                    "The below text is are any relevant Emberwind rules if you think the question is "
+                    "about Emberwind. If it is not Emberwind related, answer normally."
+                )
 
                 message = await AI.query_message(
                     content,
                     self.bot.rules_df,
                     model=CHAT_MODEL,
                     token_budget=512,
-                    custom_introduction=introduction
+                    custom_introduction=introduction,
                 )
                 message = message.replace(f"\n\nQuestion: {content}", "")
 
@@ -257,20 +315,30 @@ class AI(Extension):
             reply = await self.format_text(reply)
 
             if is_forcing_dad or random.randint(1, 69) == 69:
-                reply = reply[:len(reply) // 2] + "-\n\n" + await AI.get_dad_joke()
+                reply = reply[: len(reply) // 2] + "-\n\n" + await AI.get_dad_joke()
 
             if len(reply) > 1900:
-                paginator = Paginator.create_from_string(self.bot, reply, page_size=1900)
+                paginator = Paginator.create_from_string(
+                    self.bot, reply, page_size=1900
+                )
                 paginator._author_id = reply_to.author
                 await edit_when_done.edit(**paginator.to_dict(), content="")
             else:
                 await edit_when_done.edit(content=reply)
 
     async def format_text(self, text):
-        toughness_icon = await self.bot.fetch_custom_emoji(755894720546471947, 518833007398748161)
-        resistance_icon = await self.bot.fetch_custom_emoji(755894720927891557, 518833007398748161)
-        dodge_icon = await self.bot.fetch_custom_emoji(755894720588415087, 518833007398748161)
-        willpower_icon = await self.bot.fetch_custom_emoji(755894720932216945, 518833007398748161)
+        toughness_icon = await self.bot.fetch_custom_emoji(
+            755894720546471947, 518833007398748161
+        )
+        resistance_icon = await self.bot.fetch_custom_emoji(
+            755894720927891557, 518833007398748161
+        )
+        dodge_icon = await self.bot.fetch_custom_emoji(
+            755894720588415087, 518833007398748161
+        )
+        willpower_icon = await self.bot.fetch_custom_emoji(
+            755894720932216945, 518833007398748161
+        )
         # define desired replacements here
         rep = {
             "fallen": "***FALLEN***",
@@ -323,9 +391,11 @@ class AI(Extension):
     def update_rules_df(self):
         self.bot.rules_df = pd.concat(
             (pd.read_csv(path) for path in SAVE_PATHS.values() if os.path.isfile(path)),
-            ignore_index=True
+            ignore_index=True,
         )
-        self.bot.rules_df["embedding"] = self.bot.rules_df["embedding"].apply(ast.literal_eval)
+        self.bot.rules_df["embedding"] = self.bot.rules_df["embedding"].apply(
+            ast.literal_eval
+        )
 
     @staticmethod
     def update_command(name, description=""):
@@ -340,16 +410,12 @@ class AI(Extension):
 
         return wrapper
 
-    @update_command(
-        name="knowledge_base"
-    )
+    @update_command(name="knowledge_base")
     @check(has_role(525501383189856278))
     async def get_knowledge_base(self, ctx: SlashContext):
         await ctx.send("Updating Knowledge Base Embeddings")
 
-        headers = {
-            "Emberwind-Api-Key": EMBERWIND_KEY
-        }
+        headers = {"Emberwind-Api-Key": EMBERWIND_KEY}
         params = {
             "page": 0,
             "size": 1000,
@@ -364,11 +430,13 @@ class AI(Extension):
                 for faq in result["data"]:
                     async with session.get(f"{url}/{faq['slug']}") as faq_resp:
                         question = await faq_resp.json()
-                        formatted = f"{question['question']}\n" \
-                                    f"{' '.join(x['name'] for x in question['path'])}\n" \
-                                    f"{question['answer']}"
-                        formatted = re.sub(CLEAN_HTML, ' ', formatted)
-                        data.append(formatted.replace('#', '').replace("@", '').strip())
+                        formatted = (
+                            f"{question['question']}\n"
+                            f"{' '.join(x['name'] for x in question['path'])}\n"
+                            f"{question['answer']}"
+                        )
+                        formatted = re.sub(CLEAN_HTML, " ", formatted)
+                        data.append(formatted.replace("#", "").replace("@", "").strip())
 
         batch_size = 1000
         embeddings = []
@@ -376,7 +444,9 @@ class AI(Extension):
             batch_end = batch_start + batch_size
             batch = data[batch_start:batch_end]
             print(f"Batch {batch_start} to {batch_end - 1}")
-            response = await openai.Embedding.acreate(model=EMBEDDING_MODEL, input=batch)
+            response = await openai.Embedding.acreate(
+                model=EMBEDDING_MODEL, input=batch
+            )
             for i, be in enumerate(response["data"]):
                 assert i == be["index"]
             batch_embeddings = [e["embedding"] for e in response["data"]]
@@ -388,9 +458,7 @@ class AI(Extension):
 
         await ctx.send("Finished Updating Local Knowledge Base")
 
-    @update_command(
-        name="comprehensive_rules"
-    )
+    @update_command(name="comprehensive_rules")
     @check(has_role(525501383189856278))
     async def update_rules(self, ctx: SlashContext):
         await ctx.send("Updating Comprehensive Rules Embeddings")
@@ -405,7 +473,9 @@ class AI(Extension):
             batch_end = batch_start + batch_size
             batch = data[batch_start:batch_end]
             print(f"Batch {batch_start} to {batch_end - 1}")
-            response = await openai.Embedding.acreate(model=EMBEDDING_MODEL, input=batch)
+            response = await openai.Embedding.acreate(
+                model=EMBEDDING_MODEL, input=batch
+            )
             for i, be in enumerate(response["data"]):
                 assert i == be["index"]
             batch_embeddings = [e["embedding"] for e in response["data"]]
@@ -418,7 +488,9 @@ class AI(Extension):
         await ctx.send("Finished Updating Local Comprehensive Rules")
 
     async def update_corrections(self):
-        with open(f"{DATA_PATH}\\corrections.txt", "r", encoding="utf8") as corrections_file:
+        with open(
+            f"{DATA_PATH}\\corrections.txt", "r", encoding="utf8"
+        ) as corrections_file:
             corrections_text = corrections_file.read().strip().strip(";/.")
             data = [correction.strip() for correction in corrections_text.split(";/.")]
 
@@ -428,7 +500,9 @@ class AI(Extension):
             batch_end = batch_start + batch_size
             batch = data[batch_start:batch_end]
             print(f"Batch {batch_start} to {batch_end - 1}")
-            response = await openai.Embedding.acreate(model=EMBEDDING_MODEL, input=batch)
+            response = await openai.Embedding.acreate(
+                model=EMBEDDING_MODEL, input=batch
+            )
             for i, be in enumerate(response["data"]):
                 assert i == be["index"]
             batch_embeddings = [e["embedding"] for e in response["data"]]
@@ -450,9 +524,15 @@ class AI(Extension):
 
         print("Correcting")
 
-        reply_to = await ctx.channel.fetch_message(ctx.target.message_reference.message_id)
+        reply_to = await ctx.channel.fetch_message(
+            ctx.target.message_reference.message_id
+        )
         question = reply_to.content
-        question = question.replace(self.bot.user.mention, '').replace('rules-search', '').strip()
+        question = (
+            question.replace(self.bot.user.mention, "")
+            .replace("rules-search", "")
+            .strip()
+        )
 
         modal = Modal(
             ParagraphText(
@@ -469,21 +549,15 @@ class AI(Extension):
             model=CHAT_MODEL,
             messages=[
                 SETUP_MESSAGE,
-                {
-                    "role": "user",
-                    "content": question
-                },
-                {
-                    "role": "assistant",
-                    "content": ctx.target.content
-                },
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": ctx.target.content},
                 {
                     "role": "user",
                     "content": f"State that you were wrong and the correct answer is: "
-                               f"{modal_ctx.responses['correct_answer']}. "
-                               f"Respond as if you were correcting yourself."
+                    f"{modal_ctx.responses['correct_answer']}. "
+                    f"Respond as if you were correcting yourself.",
                 },
-            ]
+            ],
         )
 
         reply = await self.format_text(response.choices[0].message.content)
@@ -491,16 +565,11 @@ class AI(Extension):
         await modal_ctx.send("Corrected")
 
         with open(f"{DATA_PATH}\\corrections.txt", "a+") as file:
-            file.write(
-                f"{question}\n{modal_ctx.responses['correct_answer']}\n;/.\n")
+            file.write(f"{question}\n{modal_ctx.responses['correct_answer']}\n;/.\n")
 
         await self.update_corrections()
 
-    @slash_command(
-        name="dad_joke",
-        scopes=SCOPES,
-        description="Get a random dad joke"
-    )
+    @slash_command(name="dad_joke", scopes=SCOPES, description="Get a random dad joke")
     async def dad_joke(self, ctx: SlashContext):
         await ctx.defer()
         joke = await AI.get_dad_joke()
@@ -512,11 +581,14 @@ class AI(Extension):
             model=CHAT_MODEL,
             messages=[
                 DADDISAUR_MESSAGE,
-                {"role": "user", "content": f"Tell me a dad joke about {random.choice(FUNNY_WORDS)}. Wrap the joke "
-                                            f"in quotation marks. Prefix the joke with a note in italics about "
-                                            f"Daddisaur chiming in from another room or entering the room and "
-                                            f"leaving after. Use proper grammar and punctuation."},
-            ]
+                {
+                    "role": "user",
+                    "content": f"Tell me a dad joke about {random.choice(FUNNY_WORDS)}. Wrap the joke "
+                    f"in quotation marks. Prefix the joke with a note in italics about "
+                    f"Daddisaur chiming in from another room or entering the room and "
+                    f"leaving after. Use proper grammar and punctuation.",
+                },
+            ],
         )
         print(response.choices[0].message.content)
         return response.choices[0].message.content
