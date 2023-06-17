@@ -6,6 +6,7 @@ import aiohttp
 import openai
 import pandas as pd
 import tiktoken
+import json
 
 from interactions import (
     Extension,
@@ -25,6 +26,8 @@ from interactions.ext.paginators import Paginator
 from scipy import spatial
 
 EMBERWIND_KEY = os.getenv("EMBERWIND_KEY")
+EMBERWIND_EMAIL = os.getenv("EMBERWIND_EMAIL")
+EMBERWIND_PASSWORD = os.getenv("EMBERWIND_PASSWORD")
 openai.api_key = os.getenv("OPENAI_KEY")
 openai.organization = os.getenv("OPENAI_ORG")
 
@@ -98,6 +101,7 @@ SAVE_PATHS: dict[str, str] = {
     "faq": f"{DATA_PATH}\\faq.csv",
     "rules": f"{DATA_PATH}\\rules.csv",
     "corrections": f"{DATA_PATH}\\corrections.csv",
+    "actions": f"{DATA_PATH}\\actions.csv",
 }
 
 CHAT_MODEL: str = "gpt-3.5-turbo"
@@ -149,7 +153,7 @@ class AI(Extension):
     ) -> str:
         """Return a message for GPT, with relevant source texts pulled from a dataframe."""
         strings, relatednesses = await AI.strings_ranked_by_relatedness(
-            query, df, top_n=3
+            query, df, top_n=6
         )
         if custom_introduction:
             introduction = custom_introduction
@@ -174,7 +178,6 @@ class AI(Extension):
 
     @listen()
     async def on_member_update(self, event: MemberUpdate):
-        print("Member Added")
         if (
             MemberFlags.COMPLETED_ONBOARDING not in event.before.flags
             and MemberFlags.COMPLETED_ONBOARDING in event.after.flags
@@ -287,7 +290,7 @@ class AI(Extension):
 
                 introduction = (
                     "The below text is are any relevant Emberwind rules if you think the question is "
-                    "about Emberwind. If it is not Emberwind related, answer normally."
+                    'about Emberwind. If it is not Emberwind related, answer normally.\n\nEmberwind rules section:\n"""'
                 )
 
                 message = await AI.query_message(
@@ -431,26 +434,19 @@ class AI(Extension):
                     async with session.get(f"{url}/{faq['slug']}") as faq_resp:
                         question = await faq_resp.json()
                         formatted = (
-                            f"{question['question']}\n"
                             f"{' '.join(x['name'] for x in question['path'])}\n"
+                            f"{question['question']}\n"
                             f"{question['answer']}"
                         )
                         formatted = re.sub(CLEAN_HTML, " ", formatted)
-                        data.append(formatted.replace("#", "").replace("@", "").strip())
+                        data.append(
+                            formatted.replace("#", "")
+                            .replace("@", "")
+                            .replace("$", "")
+                            .strip()
+                        )
 
-        batch_size = 1000
-        embeddings = []
-        for batch_start in range(0, len(data), batch_size):
-            batch_end = batch_start + batch_size
-            batch = data[batch_start:batch_end]
-            print(f"Batch {batch_start} to {batch_end - 1}")
-            response = await openai.Embedding.acreate(
-                model=EMBEDDING_MODEL, input=batch
-            )
-            for i, be in enumerate(response["data"]):
-                assert i == be["index"]
-            batch_embeddings = [e["embedding"] for e in response["data"]]
-            embeddings.extend(batch_embeddings)
+        embeddings = await self.get_embeddings_from_data(data)
 
         df = pd.DataFrame({"text": data, "embedding": embeddings})
         df.to_csv(SAVE_PATHS["faq"], index=False)
@@ -467,6 +463,109 @@ class AI(Extension):
             rules_text = rules.read()
             data = [rule.strip() for rule in rules_text.split(";/.")]
 
+        embeddings = await self.get_embeddings_from_data(data)
+
+        df = pd.DataFrame({"text": data, "embedding": embeddings})
+        df.to_csv(f"{DATA_PATH}\\rules.csv", index=False)
+        self.update_rules_df()
+
+        await ctx.send("Finished Updating Local Comprehensive Rules")
+
+    @update_command(name="hero_actions")
+    @check(has_role(525501383189856278))
+    async def get_hero_actions(self, ctx: SlashContext):
+        await ctx.send("Updating Hero Actions Embeddings")
+
+        headers = {"Emberwind-Api-Key": EMBERWIND_KEY}
+
+        data = []
+        classes = [
+            "archer",
+            "ardent",
+            "atlanta",
+            "druid",
+            "invoker",
+            "rogue",
+            "spiritualist",
+            "tactician",
+            "warrior",
+        ]
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            auth_url = "https://emberwindgame.com/emberwind-web/api/v1/web/auth/login"
+            body = json.dumps(
+                {
+                    "email": EMBERWIND_EMAIL,
+                    "password": EMBERWIND_PASSWORD,
+                    "rememberMe": False,
+                }
+            )
+
+            async with session.post(
+                auth_url,
+                data=body,
+                headers={"Content-Type": "application/json", "Accept": "*/*"},
+            ) as resp:
+                if resp.status != 200:
+                    await ctx.send("Failed to login to Emberwind")
+                    return
+
+            for hero_class in classes:
+                url = (
+                    f"https://emberwindgame.com/emberwind-web/api/v1/web/heroes/hero-creator/classes/"
+                    f"{hero_class}/options/up-to-tier/4"
+                )
+                async with session.get(url) as resp:
+                    result = await resp.json()
+                    for tier in result:
+                        for action, category in [
+                            *[(t, "Trait") for t in tier["traits"]],
+                            *[(a, "Class Action") for a in tier["actions"]],
+                            *[
+                                (t, "Tide Turner Action")
+                                for t in tier["tideTurnerActions"]
+                            ],
+                        ]:
+                            name = action.get("name", "")
+                            type = action.get("type", "")
+                            subtype = action.get("subtype", "")
+                            target = action.get("target", "")
+                            range_description = action.get("rangeDescription", "")
+                            action_range = action.get("range", "")
+                            action_speed = action.get("actionSpeed", "")
+                            effect = action.get("effect", "")
+
+                            formatted = f"Class: {hero_class.capitalize()}\n"
+                            formatted += f"{category}: {name}\n"
+                            if type == "Passive":
+                                formatted += f"Type: {type}\n"
+                            else:
+                                formatted += f"Type: {type} / {subtype}\n"
+                                formatted += f"Target: {target}\n"
+                                if action_range:
+                                    formatted += (
+                                        f"Range: {range_description} / {action_range}\n"
+                                    )
+                                formatted += f"Speed: {action_speed}\n"
+                            formatted += f"Effect: {effect}"
+
+                            formatted = re.sub(CLEAN_HTML, " ", formatted)
+                            data.append(
+                                formatted.replace("#", "")
+                                .replace("@", "")
+                                .replace("$", "")
+                                .strip()
+                            )
+
+        embeddings = await self.get_embeddings_from_data(data)
+
+        df = pd.DataFrame({"text": data, "embedding": embeddings})
+        df.to_csv(SAVE_PATHS["actions"], index=False)
+        self.update_rules_df()
+
+        await ctx.send("Finished Updating Local Hero Actions")
+
+    async def get_embeddings_from_data(self, data):
         batch_size = 1000
         embeddings = []
         for batch_start in range(0, len(data), batch_size):
@@ -480,12 +579,7 @@ class AI(Extension):
                 assert i == be["index"]
             batch_embeddings = [e["embedding"] for e in response["data"]]
             embeddings.extend(batch_embeddings)
-
-        df = pd.DataFrame({"text": data, "embedding": embeddings})
-        df.to_csv(f"{DATA_PATH}\\rules.csv", index=False)
-        self.update_rules_df()
-
-        await ctx.send("Finished Updating Local Comprehensive Rules")
+        return embeddings
 
     async def update_corrections(self):
         with open(
@@ -494,19 +588,7 @@ class AI(Extension):
             corrections_text = corrections_file.read().strip().strip(";/.")
             data = [correction.strip() for correction in corrections_text.split(";/.")]
 
-        batch_size = 1000
-        embeddings = []
-        for batch_start in range(0, len(data), batch_size):
-            batch_end = batch_start + batch_size
-            batch = data[batch_start:batch_end]
-            print(f"Batch {batch_start} to {batch_end - 1}")
-            response = await openai.Embedding.acreate(
-                model=EMBEDDING_MODEL, input=batch
-            )
-            for i, be in enumerate(response["data"]):
-                assert i == be["index"]
-            batch_embeddings = [e["embedding"] for e in response["data"]]
-            embeddings.extend(batch_embeddings)
+        embeddings = await self.get_embeddings_from_data(data)
 
         df = pd.DataFrame({"text": data, "embedding": embeddings})
         df.to_csv(f"{DATA_PATH}\\corrections.csv", index=False)

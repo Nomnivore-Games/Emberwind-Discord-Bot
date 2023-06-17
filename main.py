@@ -12,7 +12,9 @@ cls_log = logging.getLogger(__name__)
 cls_log.setLevel(logging.DEBUG)
 
 bot = Client(
-    intents=Intents.DEFAULT & ~Intents.DIRECT_MESSAGES | Intents.MESSAGE_CONTENT | Intents.GUILD_MEMBERS,
+    intents=Intents.DEFAULT & ~Intents.DIRECT_MESSAGES
+    | Intents.MESSAGE_CONTENT
+    | Intents.GUILD_MEMBERS,
     sync_interactions=True,
     asyncio_debug=True,
     logger=cls_log,
