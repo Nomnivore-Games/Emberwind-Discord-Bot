@@ -20,6 +20,7 @@ from interactions import (
     Modal,
     ParagraphText,
     MemberFlags,
+    Message,
 )
 from interactions.api.events import MessageCreate, MemberUpdate
 from interactions.ext.paginators import Paginator
@@ -29,7 +30,7 @@ EMBERWIND_KEY = os.getenv("EMBERWIND_KEY")
 EMBERWIND_EMAIL = os.getenv("EMBERWIND_EMAIL")
 EMBERWIND_PASSWORD = os.getenv("EMBERWIND_PASSWORD")
 openai.api_key = os.getenv("OPENAI_KEY")
-openai.organization = os.getenv("OPENAI_ORG")
+# openai.organization = os.getenv("OPENAI_ORG")
 
 SETUP_MESSAGE: dict[str, str] = {
     "role": "system",
@@ -110,6 +111,51 @@ EMBEDDING_MODEL: str = "text-embedding-ada-002"
 SCOPES = [518833007398748161, 1041764477714051103]
 
 CLEAN_NAME: re.Pattern = re.compile(r"[\W_]+")
+
+SEARCH_RULES_FIRST = {
+    "name": "search_rules",
+    "description": "Search the EMBERWIND rules for a query.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The query to search for, e.g. Special Action Limits.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+SEARCH_RULES_SECOND = {
+    "name": "search_rules",
+    "description": "If you don't have enough information to answer the question, use this to search the EMBERWIND rules for more specific information or more context.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The query to search for, e.g. Special Action Limits.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+ROLL_DICE = {
+    "name": "roll_dice",
+    "description": "Roll some dice.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "dice": {
+                "type": "string",
+                "description": "The dice to roll, e.g. 2d6.",
+            },
+        },
+        "required": ["dice"],
+    },
+}
 
 
 class AI(Extension):
@@ -234,10 +280,6 @@ class AI(Extension):
             if is_rules_search or event.message.channel == self.bot.get_channel(
                 518833140807237653
             ):
-                message = await AI.query_message(
-                    content, self.bot.rules_df, model=CHAT_MODEL, token_budget=1024
-                )
-                print(message)
                 rules_messages = [
                     {
                         "role": "system",
@@ -246,14 +288,64 @@ class AI(Extension):
                         " speak as Momnisaur in first person. Speak about Emberwind as if you "
                         "were part of the team that made the rules.",
                     },
-                    {"role": "user", "content": message},
+                    {
+                        "role": "user",
+                        "content": f"Answer the below EMBERWIND question. Make "
+                        f"sure to also give the reasoning behind the answer to "
+                        f"the best of your ability. If the answer cannot be "
+                        f'found in the text, write "I could not find an answer.'
+                        f'"\n\nQuestion:\n{content}',
+                    },
                 ]
+                print(json.dumps(rules_messages[-1], indent=2))
 
                 response = await openai.ChatCompletion.acreate(
-                    model=CHAT_MODEL,
+                    model="gpt-4",
                     messages=rules_messages,
+                    functions=[
+                        SEARCH_RULES_FIRST,
+                    ],
                     temperature=0.5,
                 )
+
+                message = response.choices[0].message
+                rules_messages.append(message)
+                print(message)
+
+                while message.get("function_call"):
+                    function_name = message["function_call"]["name"]
+                    parameters = json.loads(message["function_call"]["arguments"])
+
+                    function_reference = getattr(self, function_name, None)
+
+                    if not function_reference:
+                        print(f"Function {function_name} not found")
+                        break
+
+                    function_response = await function_reference(
+                        message=edit_when_done, **parameters
+                    )
+
+                    rules_messages.append(
+                        {
+                            "role": "function",
+                            "name": function_name,
+                            "content": function_response,
+                        }
+                    )
+                    print(json.dumps(rules_messages[-1], indent=2))
+
+                    response = await openai.ChatCompletion.acreate(
+                        model="gpt-4",
+                        messages=rules_messages,
+                        functions=[
+                            SEARCH_RULES_SECOND,
+                        ],
+                        temperature=0.5,
+                    )
+                    message = response.choices[0].message
+                    rules_messages.append(message)
+                    print(message)
 
             else:
                 history = []
@@ -328,6 +420,23 @@ class AI(Extension):
                 await edit_when_done.edit(**paginator.to_dict(), content="")
             else:
                 await edit_when_done.edit(content=reply)
+
+    async def search_rules(self, query, message: Message):
+        """Return a message for GPT, with relevant source texts pulled from a dataframe."""
+        await message.edit(content="Searching rules...")
+        token_budget = 2048
+        strings, relatednesses = await AI.strings_ranked_by_relatedness(
+            query, self.bot.rules_df, top_n=20
+        )
+        result = ""
+        for string in strings:
+            next_article = "\n\n" + string
+            if AI.num_tokens(result + next_article, model=CHAT_MODEL) > token_budget:
+                break
+            else:
+                result += next_article
+
+        return result
 
     async def format_text(self, text):
         toughness_icon = await self.bot.fetch_custom_emoji(
