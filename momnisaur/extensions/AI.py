@@ -497,6 +497,14 @@ class AI(Extension):
             "warrior",
         ]
 
+        subclasses = [
+            "elysian_legionnaire",
+            "hekau",
+            "nightshade",
+            "saviour",
+            "wildfang",
+        ]
+
         async with aiohttp.ClientSession(headers=headers) as session:
             auth_url = "https://emberwindgame.com/emberwind-web/api/v1/web/auth/login"
             body = json.dumps(
@@ -542,6 +550,53 @@ class AI(Extension):
                             effect = action.get("effect", "")
 
                             formatted = f"Class: {hero_class.capitalize()}\n"
+                            formatted += f"{category}: {name}\n"
+                            if type == "Passive":
+                                formatted += f"Type: {type}\n"
+                            else:
+                                formatted += f"Type: {type} / {subtype}\n"
+                                formatted += f"Target: {target}\n"
+                                if action_range:
+                                    formatted += (
+                                        f"Range: {range_description} / {action_range}\n"
+                                    )
+                                formatted += f"Speed: {action_speed}\n"
+                            formatted += f"Effect: {effect}"
+
+                            formatted = re.sub(CLEAN_HTML, " ", formatted)
+                            data.append(
+                                formatted.replace("#", "")
+                                .replace("@", "")
+                                .replace("$", "")
+                                .strip()
+                            )
+
+            for subclass in subclasses:
+                url = (
+                    f"https://emberwindgame.com/emberwind-web/api/v1/web/heroes/hero-creator/subclasses/"
+                    f"{subclass}/options/up-to-tier/4"
+                )
+                async with session.get(url) as resp:
+                    result = await resp.json()
+                    for tier in result:
+                        for action, category in [
+                            *[(t, "Trait") for t in tier["traits"]],
+                            *[(a, "Class Action") for a in tier["actions"]],
+                            *[
+                                (t, "Tide Turner Action")
+                                for t in tier["tideTurnerActions"]
+                            ],
+                        ]:
+                            name = action.get("name", "")
+                            type = action.get("type", "")
+                            subtype = action.get("subtype", "")
+                            target = action.get("target", "")
+                            range_description = action.get("rangeDescription", "")
+                            action_range = action.get("range", "")
+                            action_speed = action.get("actionSpeed", "")
+                            effect = action.get("effect", "")
+
+                            formatted = f"Class: {subclass.capitalize()}\n"
                             formatted += f"{category}: {name}\n"
                             if type == "Passive":
                                 formatted += f"Type: {type}\n"
