@@ -29,6 +29,7 @@ async def on_ready():
     print(f"This bot is owned by {bot.owner}")
 
 
-bot.load_extension("interactions.ext.jurigged")
+# bot.load_extension("interactions.ext.jurigged")
 bot.load_extension("momnisaur.extensions.AI")
+bot.load_extension("momnisaur.extensions.dice")
 bot.start(DISCORD_KEY)
