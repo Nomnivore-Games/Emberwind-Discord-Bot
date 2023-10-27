@@ -21,7 +21,7 @@ from interactions import (
     ParagraphText,
     MemberFlags,
 )
-from interactions.api.events import MessageCreate, MemberUpdate
+from interactions.api.events import MessageCreate, MemberUpdate, MemberAdd
 from interactions.ext.paginators import Paginator
 from scipy import spatial
 
@@ -114,6 +114,7 @@ CLEAN_NAME: re.Pattern = re.compile(r"[\W_]+")
 
 class AI(Extension):
     def __init__(self, bot):
+        self.new_members = []
         self.update_rules_df()
 
     @staticmethod
@@ -177,10 +178,15 @@ class AI(Extension):
         return message + '"""\n\n' + question
 
     @listen()
+    async def on_member_add(self, event: MemberAdd):
+        self.new_members.append(event.member)
+
+    @listen()
     async def on_member_update(self, event: MemberUpdate):
         if (
             MemberFlags.COMPLETED_ONBOARDING not in event.before.flags
             and MemberFlags.COMPLETED_ONBOARDING in event.after.flags
+            and event.after in self.new_members
         ):
             print("Member Completed Onboarding")
             response = await openai.ChatCompletion.acreate(
@@ -190,12 +196,12 @@ class AI(Extension):
                     {
                         "role": "user",
                         "content": f"Welcome {event.after.mention} to the ***EMBERWIND*** discord server!"
-                        f" Make sure to say their name. Mention that you can be pinged for general help in"
-                        f" {self.bot.get_channel(518833007948464130).mention} or for ***EMBERWIND*** rules"
+                        f" Make sure to say their name. Mention that you can be pinged for ***EMBERWIND*** rules"
                         f" questions in {self.bot.get_channel(518833140807237653).mention}.",
                     },
                 ],
             )
+            self.new_members.remove(event.after)
             introduction_channel = await self.bot.fetch_channel(518834266109509632)
             await introduction_channel.send(response.choices[0].message.content)
 
